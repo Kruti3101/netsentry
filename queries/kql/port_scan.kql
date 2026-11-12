@@ -1,0 +1,35 @@
+// NetSentry: horizontal / vertical port-scan detection (Zeek conn.log)
+// MITRE ATT&CK: T1046 Network Service Discovery (+ T1595.001 when the source is external)
+let window = 1m;
+let vertical_ports = 50;
+let horizontal_hosts = 30;
+let min_fail_ratio = 0.5;
+let internal = dynamic(["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]);
+let per_window = ZeekConn
+    | where ts > ago(1d) and proto in ("tcp", "udp")
+    | extend failed = conn_state in ("S0", "REJ", "RSTOS0", "RSTR", "SH", "OTH")
+    | summarize flows = count(), failed = countif(failed) by id_orig_h, bin(ts, window);
+let vertical = ZeekConn
+    | where ts > ago(1d)
+    | summarize ports = dcount(id_resp_p) by id_orig_h, id_resp_h, bin(ts, window)
+    | summarize arg_max(ports, id_resp_h) by id_orig_h, ts
+    | project id_orig_h, ts, max_ports_one_host = ports, target = id_resp_h;
+let horizontal = ZeekConn
+    | where ts > ago(1d)
+    | summarize hosts = dcount(id_resp_h) by id_orig_h, id_resp_p, bin(ts, window)
+    | summarize arg_max(hosts, id_resp_p) by id_orig_h, ts
+    | project id_orig_h, ts, max_hosts_one_port = hosts, port = id_resp_p;
+per_window
+| join kind=leftouter vertical on id_orig_h, ts
+| join kind=leftouter horizontal on id_orig_h, ts
+| extend fail_ratio = todouble(failed) / flows
+| where fail_ratio >= min_fail_ratio
+    and (max_ports_one_host >= vertical_ports or max_hosts_one_port >= horizontal_hosts)
+| summarize StartTime = min(ts), EndTime = max(ts) + window,
+            PeakPorts = max(max_ports_one_host), PeakHosts = max(max_hosts_one_port),
+            FailRatio = round(max(fail_ratio), 2), Windows = count() by Scanner = id_orig_h
+| extend External = not(ipv4_is_in_any_range(Scanner, internal))
+| extend Kind = case(PeakPorts >= vertical_ports and PeakHosts >= horizontal_hosts, "vertical+horizontal",
+                     PeakPorts >= vertical_ports, "vertical", "horizontal"),
+         Techniques = iff(External, dynamic(["T1046", "T1595.001"]), dynamic(["T1046"])),
+         AlertType = "port_scan"

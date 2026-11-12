@@ -1,0 +1,64 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      llm_eval:
+        description: "Also run the triage eval against Claude (needs ANTHROPIC_API_KEY secret)"
+        type: boolean
+        default: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[dev]"
+      - run: ruff check netsentry tests
+      - run: pytest -q
+
+  replay:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - name: Generate attack PCAPs and replay through detection + response
+        run: |
+          netsentry gen-pcaps data/pcaps
+          netsentry replay data/scenarios.yaml
+      - name: Triage eval (offline heuristic baseline)
+        run: netsentry eval --provider heuristic --out evals/results/heuristic.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: evals/results/
+
+  llm-eval:
+    if: github.event_name == 'workflow_dispatch' && inputs.llm_eval
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[llm]"
+      - run: netsentry eval --provider anthropic --out evals/results/claude.json
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: llm-eval-results
+          path: evals/results/

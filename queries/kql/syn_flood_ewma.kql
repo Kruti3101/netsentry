@@ -1,0 +1,39 @@
+// NetSentry: SYN flood detection with per-service EWMA baselines (Zeek conn.log)
+// MITRE ATT&CK: T1499.001 OS Exhaustion Flood, T1498 Network Denial of Service
+//
+// Table: ZeekConn (Zeek conn.log ingested to Sentinel/ADX, dots -> underscores):
+//   ts:datetime, uid, id_orig_h, id_orig_p:int, id_resp_h, id_resp_p:int, proto,
+//   conn_state, orig_pkts:long, resp_pkts:long, orig_bytes:long, resp_bytes:long
+// Mirrors netsentry/detect/floods.py: EWMA mean/variance per service, z-score
+// against the *previous* window's baseline, plus absolute volume and SYN-ratio gates.
+let lookback = 2h;
+let bin_size = 10s;
+let alpha = 0.1;
+let z_threshold = 4.0;
+let min_syn = 200;
+let min_syn_ratio = 0.6;
+let warmup = 20;
+ZeekConn
+| where ts > ago(lookback) and proto == "tcp"
+| extend syn_only = conn_state in ("S0", "REJ", "RSTOS0", "SH")
+| make-series flows = count(), syn = countif(syn_only) default = 0
+    on ts from ago(lookback) to now() step bin_size
+    by service = strcat(id_resp_h, ":", id_resp_p)
+// EWMA as a first-order IIR filter: y[n] = a*x[n] + (1-a)*y[n-1]
+| extend ewma = series_iir(syn, dynamic([alpha]), dynamic([1, alpha - 1]))
+| extend ewma_sq = series_iir(series_multiply(syn, syn), dynamic([alpha]), dynamic([1, alpha - 1]))
+// compare each window with the baseline as it stood *before* that window
+| extend prev_mean = array_shift_right(ewma, 1), prev_sq = array_shift_right(ewma_sq, 1)
+| mv-expand ts to typeof(datetime), syn to typeof(long), flows to typeof(long),
+            prev_mean to typeof(double), prev_sq to typeof(double)
+| serialize
+| extend n = row_number(1, prev(service) != service)
+| extend std = max_of(sqrt(max_of(prev_sq - prev_mean * prev_mean, 0.0)), 0.1 * prev_mean, 1.0)
+| extend z = (syn - prev_mean) / std, syn_ratio = todouble(syn) / max_of(flows, 1)
+| where n > warmup and z >= z_threshold and syn >= min_syn and syn_ratio >= min_syn_ratio
+| summarize StartTime = min(ts), EndTime = max(ts) + bin_size, PeakSyn = max(syn),
+            PeakZ = round(max(z), 1), Windows = count() by service
+| extend Victim = tostring(split(service, ":")[0]), Port = toint(split(service, ":")[1]),
+         AlertType = "syn_flood", Techniques = dynamic(["T1499.001", "T1498"]),
+         Severity = iff(PeakZ >= 3 * z_threshold, "Critical", "High")
+| order by PeakZ desc

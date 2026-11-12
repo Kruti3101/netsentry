@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "netsentry"
+version = "0.1.0"
+description = "Infrastructure anomaly and DDoS detection on Zeek & NetFlow telemetry, with automated response and LLM-assisted triage"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["zeek", "netflow", "ddos", "network-security", "anomaly-detection", "mitre-attack", "llm"]
+dependencies = ["pyyaml>=6"]
+
+[project.optional-dependencies]
+llm = ["anthropic>=0.40"]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[project.scripts]
+netsentry = "netsentry.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["netsentry*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E731", "E501", "B905"]  # line length handled by formatter; zip over offset slices is intentional

@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+build/
+dist/
+
+# generated artefacts
+data/pcaps/
+state/
+evals/results/*.json
+!evals/results/.gitkeep
+*.pcap
+*.pcapng

@@ -1,0 +1,47 @@
+# NetSentry configuration. Every key is optional; defaults live in netsentry/config.py.
+window: 10                     # seconds per feature window
+internal_nets: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]
+
+baseline:
+  alpha: 0.1                   # EWMA smoothing (higher = adapts faster)
+  warmup_windows: 20
+  z_threshold: 4.0             # flood detectors
+  anomaly_z_threshold: 6.0     # generic volume anomaly (low severity, notify only)
+  rel_std_floor: 0.1
+  max_freeze_windows: 30
+
+flood:
+  min_syn_per_window: 200
+  min_syn_ratio: 0.6
+  min_udp_pkts_per_window: 2000
+  min_amp_bytes_per_window: 5000000
+  cold_start_syn_per_window: 2000
+  cold_start_udp_pkts_per_window: 20000
+  anomaly_min_flows: 50
+
+scan:
+  window: 60
+  vertical_ports: 50
+  horizontal_hosts: 30
+  min_fail_ratio: 0.5
+
+beacon:
+  min_connections: 8
+  min_interval: 10
+  max_robust_cv: 0.2
+  ignore_ports: [53, 123, 5353]
+
+response:
+  dry_run: true                # flip to false (or pass --apply) to enforce
+  allowlist: [127.0.0.0/8, 10.0.0.1/32]   # never blocked: loopback, core router
+  min_confidence: 0.6
+  block_ttl_seconds: 3600
+  max_blocklist_size: 10000
+  syn_rate_limit_pps: 200
+  udp_rate_limit_pps: 1000
+  blocklist_path: state/blocklist.json
+  nft_table: netsentry
+
+assets:
+  10.0.0.10: {role: public web frontend, owner: web-platform, criticality: high}
+  10.0.0.53: {role: internal DNS resolver, owner: netops, criticality: high}

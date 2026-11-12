@@ -1,0 +1,68 @@
+# Replay validation manifest.
+# Generate the synthetic captures first:  netsentry gen-pcaps data/pcaps
+# Real captures (e.g. CIC-DDoS2019, MAWI, your own lab) can be added as new
+# scenarios; convert pcapng first with `editcap -F pcap in.pcapng out.pcap`.
+pcap_dir: pcaps
+
+scenarios:
+  baseline:
+    pcap: baseline.pcap
+    max_alerts: 0
+
+  syn_flood:
+    pcap: syn_flood.pcap
+    attack_start: 1700000600
+    expect:
+      - {type: syn_flood, dst: 10.0.0.10, dport: 443, technique: T1499.001}
+    expect_actions:
+      - {kind: rate_limit, dst: 10.0.0.10, dport: 443, proto: tcp}
+    never_block: [10.0.0.10]
+
+  udp_flood:
+    pcap: udp_flood.pcap
+    attack_start: 1700000600
+    expect:
+      - {type: udp_flood, dst: 10.0.0.53, dport: 53, technique: T1498.001}
+    expect_actions:
+      - {kind: rate_limit, dst: 10.0.0.53, proto: udp}
+      - {kind: block_src, target: 198.51.100.201}
+    never_block: [10.0.0.53]
+
+  amplification:
+    pcap: amplification.pcap
+    attack_start: 1700000600
+    expect:
+      - {type: amplification, dst: 10.0.0.10, technique: T1498.002}
+    expect_actions:
+      - {kind: drop_reflection, dst: 10.0.0.10, sport: 123}
+    never_block: [10.0.0.10]
+
+  port_scan:
+    pcap: port_scan.pcap
+    attack_start: 1700000600
+    expect:
+      - {type: port_scan, src: 203.0.113.66, technique: T1046}
+      - {type: port_scan, src: 10.0.1.50, technique: T1046, start: 1700000720}
+    expect_actions:
+      - {kind: block_src, target: 203.0.113.66}
+      # internal host -> emitted but held for human approval
+      - {kind: block_src, target: 10.0.1.50, requires_approval: true}
+    never_block: [10.0.0.10]
+
+  beaconing:
+    pcap: beaconing.pcap
+    expect:
+      - {type: beaconing, src: 10.0.1.23, dst: 203.0.113.200, technique: T1071.001}
+    expect_not:
+      - {type: beaconing, dst: 192.0.2.80}
+      - {type: beaconing, dst: 192.0.2.81}
+    expect_actions:
+      - {kind: block_dst, target: 203.0.113.200}
+
+  flash_crowd:
+    # benign surge of complete handshakes: must not be called a SYN flood
+    pcap: flash_crowd.pcap
+    expect_not:
+      - {type: syn_flood}
+      - {type: udp_flood}
+    never_block: [10.0.0.10]

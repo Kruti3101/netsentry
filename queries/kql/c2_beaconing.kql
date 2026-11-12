@@ -1,0 +1,36 @@
+// NetSentry: C2 beaconing from connection periodicity (Zeek conn.log)
+// MITRE ATT&CK: T1071.001 Web Protocols (+ T1573 Encrypted Channel on 443)
+// Internal -> external pairs whose inter-arrival times are highly regular.
+// Uses a robust coefficient of variation (scaled MAD / median), as in
+// netsentry/detect/beacon.py, so a few missed check-ins don't hide a beacon.
+let internal = dynamic(["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]);
+let min_connections = 8;
+let min_interval = 10.0;       // seconds
+let max_robust_cv = 0.2;
+let ignore_ports = dynamic([53, 123, 5353]);
+let deltas = ZeekConn
+    | where ts > ago(1d)
+    | where ipv4_is_in_any_range(id_orig_h, internal) and not(ipv4_is_in_any_range(id_resp_h, internal))
+    | where id_resp_p !in (ignore_ports)
+    | project ts, src = id_orig_h, dst = id_resp_h, dport = id_resp_p, orig_bytes
+    | order by src, dst, dport, ts asc
+    | extend delta = iff(prev(src) == src and prev(dst) == dst and prev(dport) == dport,
+                         (ts - prev(ts)) / 1s, real(null))
+    | where isnotnull(delta) and delta > 0;
+let medians = deltas
+    | summarize n = count() + 1, median_iv = percentile(delta, 50),
+                bytes_mean = avg(orig_bytes), bytes_std = stdev(orig_bytes),
+                first_seen = min(ts), last_seen = max(ts) by src, dst, dport
+    | where n >= min_connections and median_iv >= min_interval;
+deltas
+| join kind=inner medians on src, dst, dport
+| extend absdev = abs(delta - median_iv)
+| summarize mad = percentile(absdev, 50) by src, dst, dport, n, median_iv, bytes_mean, bytes_std,
+            first_seen, last_seen
+| extend robust_cv = 1.4826 * mad / median_iv, bytes_cv = iff(bytes_mean > 0, bytes_std / bytes_mean, 0.0)
+| where robust_cv <= max_robust_cv
+| extend beacon_score = round((1 - robust_cv / max_robust_cv) * 0.7 + max_of(0.0, 1 - bytes_cv) * 0.3, 3)
+| extend Techniques = case(dport in (443, 8443), dynamic(["T1071.001", "T1573"]),
+                           dport in (80, 8080), dynamic(["T1071.001"]), dynamic(["T1071"])),
+         AlertType = "beaconing", Severity = iff(beacon_score >= 0.6, "High", "Medium")
+| order by beacon_score desc

@@ -1,0 +1,43 @@
+// NetSentry: UDP flood detection with per-service EWMA baselines (NetFlow)
+// MITRE ATT&CK: T1498.001 Direct Network Flood
+//
+// Table: NetFlow (unidirectional records, e.g. nfdump/IPFIX collector export):
+//   TimeGenerated:datetime, SrcAddr, DstAddr, SrcPort:int, DstPort:int, Protocol,
+//   TcpFlags, Packets:long, Bytes:long
+let lookback = 2h;
+let bin_size = 10s;
+let alpha = 0.1;
+let z_threshold = 4.0;
+let min_pkts = 2000;
+let warmup = 20;
+let flows = NetFlow
+    | where TimeGenerated > ago(lookback) and Protocol in ("UDP", "17")
+    // drop reverse legs: well-known source port answering an ephemeral port
+    | where not(SrcPort < 1024 and DstPort >= 1024);
+flows
+| make-series pkts = sum(Packets) default = 0 on TimeGenerated from ago(lookback) to now() step bin_size
+    by service = strcat(DstAddr, ":", DstPort)
+| extend ewma = series_iir(pkts, dynamic([alpha]), dynamic([1, alpha - 1]))
+| extend ewma_sq = series_iir(series_multiply(pkts, pkts), dynamic([alpha]), dynamic([1, alpha - 1]))
+| extend prev_mean = array_shift_right(ewma, 1), prev_sq = array_shift_right(ewma_sq, 1)
+| mv-expand TimeGenerated to typeof(datetime), pkts to typeof(long),
+            prev_mean to typeof(double), prev_sq to typeof(double)
+| serialize
+| extend n = row_number(1, prev(service) != service)
+| extend std = max_of(sqrt(max_of(prev_sq - prev_mean * prev_mean, 0.0)), 0.1 * prev_mean, 1.0)
+| extend z = (pkts - prev_mean) / std
+| where n > warmup and z >= z_threshold and pkts >= min_pkts
+| summarize StartTime = min(TimeGenerated), EndTime = max(TimeGenerated) + bin_size,
+            PeakPkts = max(pkts), PeakZ = round(max(z), 1) by service
+| extend Victim = tostring(split(service, ":")[0])
+// attribute sources that carry >= 1% of the flood's packets (spoofed floods yield none)
+| join kind=leftouter (
+    flows
+    | summarize SrcPkts = sum(Packets) by DstAddr, DstPort, SrcAddr
+    | extend service = strcat(DstAddr, ":", DstPort)
+    | join kind=inner (flows | summarize Total = sum(Packets) by DstAddr, DstPort) on DstAddr, DstPort
+    | where todouble(SrcPkts) / Total >= 0.01
+    | summarize TopSources = make_list(SrcAddr, 10) by service
+  ) on service
+| project StartTime, EndTime, Victim, service, PeakPkts, PeakZ, TopSources,
+          AlertType = "udp_flood", Techniques = dynamic(["T1498.001"])

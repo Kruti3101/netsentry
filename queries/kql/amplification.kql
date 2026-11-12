@@ -1,0 +1,20 @@
+// NetSentry: reflection / amplification detection (NetFlow)
+// MITRE ATT&CK: T1498.002 Reflection Amplification
+// Unsolicited responses *from* abusable UDP services (DNS, NTP, SSDP, memcached,
+// CLDAP, ...) arriving at one of our hosts on ephemeral ports, from external reflectors.
+let amp_ports = dynamic([19, 53, 123, 161, 389, 1900, 3702, 11211]);
+let internal = dynamic(["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]);
+let bin_size = 10s;
+let min_bytes = 5000000;
+NetFlow
+| where TimeGenerated > ago(1h) and Protocol in ("UDP", "17")
+| where SrcPort in (amp_ports) and DstPort !in (amp_ports)
+| where not(ipv4_is_in_any_range(SrcAddr, internal))
+| summarize Bytes = sum(Bytes), Reflectors = dcount(SrcAddr), Packets = sum(Packets)
+    by Victim = DstAddr, AbusedPort = SrcPort, bin(TimeGenerated, bin_size)
+| where Bytes >= min_bytes
+| summarize StartTime = min(TimeGenerated), EndTime = max(TimeGenerated) + bin_size,
+            PeakBytes = max(Bytes), PeakReflectors = max(Reflectors), Windows = count()
+    by Victim, AbusedPort
+| extend AlertType = "amplification", Techniques = dynamic(["T1498.002"]),
+         Mitigation = strcat("drop udp sport ", AbusedPort, " -> ", Victim, " (unsolicited)")
